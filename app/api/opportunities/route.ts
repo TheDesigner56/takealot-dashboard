@@ -9,9 +9,8 @@ export async function GET(request: Request) {
     const page = parseInt(searchParams.get('page') || '1', 10);
     const limit = parseInt(searchParams.get('limit') || '50', 10);
     const minMargin = searchParams.get('minMargin') ? parseFloat(searchParams.get('minMargin')!) : undefined;
-    const minConfidence = searchParams.get('minConfidence') ? parseFloat(searchParams.get('minConfidence')!) : undefined;
 
-    const result = await getOpportunities({ page, limit, minMargin, minConfidence });
+    const result = await getOpportunities({ page, limit, minMargin });
     return NextResponse.json(result);
   } catch (error) {
     console.error('Error fetching opportunities:', error);

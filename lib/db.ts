@@ -41,6 +41,7 @@ export interface RelistOpportunity {
   lead_time_days: number;
   status: string;
   created_at: string;
+  confidence?: number;
 }
 
 // ── Data Loading ────────────────────────────────────────────────
@@ -164,21 +165,19 @@ export async function getOpportunities(opts: {
   page?: number;
   limit?: number;
   minMargin?: number;
-  minConfidence?: number;
 }): Promise<{ opportunities: RelistOpportunity[]; total: number }> {
-  const { page = 1, limit = 50, minMargin, minConfidence } = opts;
+  const { page = 1, limit = 50, minMargin } = opts;
   
   const { opportunities: allOps } = await loadData();
   
   let filtered = allOps.filter((o: RelistOpportunity) => {
     if (minMargin !== undefined && o.margin_percent < minMargin) return false;
-    if (minConfidence !== undefined && o.confidence < minConfidence) return false;
     return true;
   });
   
   const total = filtered.length;
   
-  // Sort by margin then by price
+  // Sort by margin
   filtered.sort((a: RelistOpportunity, b: RelistOpportunity) => {
     return b.margin_percent - a.margin_percent;
   });
