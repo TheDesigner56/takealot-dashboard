@@ -19,19 +19,28 @@ export interface Product {
 export interface GapMatch {
   gap_id: string;
   plid: string;
-  relevance_score: number;
+  match_score: number;
+  current_title: string;
+  optimized_title: string;
+  current_price: number;
+  recommended_price: number;
+  estimated_margin: number;
   status: string;
-  created_at: string;
 }
 
 export interface RelistOpportunity {
-  id: string;
+  id: number;
   plid: string;
+  gap_id: string;
+  current_title: string;
   optimized_title: string;
   current_price: number;
   recommended_price: number;
   margin_percent: number;
-  confidence: number;
+  supplier: string;
+  lead_time_days: number;
+  status: string;
+  created_at: string;
 }
 
 // ── Data Loading ────────────────────────────────────────────────
@@ -135,14 +144,14 @@ export async function getGaps(opts: {
   
   let filtered = allGaps.filter((g: GapMatch) => {
     if (status && g.status !== status) return false;
-    if (minScore !== undefined && g.relevance_score < minScore) return false;
+    if (minScore !== undefined && g.match_score < minScore) return false;
     return true;
   });
   
   const total = filtered.length;
   
-  // Sort by relevance
-  filtered.sort((a: GapMatch, b: GapMatch) => b.relevance_score - a.relevance_score);
+  // Sort by match score
+  filtered.sort((a: GapMatch, b: GapMatch) => b.match_score - a.match_score);
   
   const offset = (page - 1) * limit;
   const gaps = filtered.slice(offset, offset + limit);
@@ -169,9 +178,8 @@ export async function getOpportunities(opts: {
   
   const total = filtered.length;
   
-  // Sort by confidence then margin
+  // Sort by margin then by price
   filtered.sort((a: RelistOpportunity, b: RelistOpportunity) => {
-    if (b.confidence !== a.confidence) return b.confidence - a.confidence;
     return b.margin_percent - a.margin_percent;
   });
   

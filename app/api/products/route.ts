@@ -1,104 +1,38 @@
-import { NextRequest, NextResponse } from 'next/server';
-import Database from 'better-sqlite3';
-import path from 'path';
-import os from 'os';
+import { NextResponse } from 'next/server';
+import { getProducts } from '@/lib/db';
 
-const DB_PATH = path.join(os.homedir(), '.openclaw/workspace/skills/takealot-intelligence/research/shadow_catalog.db');
+export const dynamic = 'force-dynamic';
 
-interface TakealotProduct {
-  plid: number;
-  title: string;
-  price: number;
-  category: string;
-  subcategory: string;
-  seller: string;
-  images: string;
-  reviews_count: number;
-  rating: number;
-  buybox_price: number;
-  url: string;
-}
-
-interface ProductsResponse {
-  products: TakealotProduct[];
-  pagination: {
-    limit: number;
-    offset: number;
-    total: number;
-    hasMore: boolean;
-  };
-}
-
-export async function GET(request: NextRequest) {
+export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
-    const limit = parseInt(searchParams.get('limit') || '20', 10);
-    const offset = parseInt(searchParams.get('offset') || '0', 10);
-    const category = searchParams.get('category') || '';
-    const minPrice = searchParams.get('minPrice') || '';
-    const maxPrice = searchParams.get('maxPrice') || '';
-    const search = searchParams.get('search') || '';
+    const page = parseInt(searchParams.get('page') || '1', 10);
+    const limit = parseInt(searchParams.get('limit') || '50', 10);
+    const category = searchParams.get('category') || undefined;
+    const seller = searchParams.get('seller') || undefined;
+    const minPrice = searchParams.get('minPrice') ? parseFloat(searchParams.get('minPrice')!) : undefined;
+    const maxPrice = searchParams.get('maxPrice') ? parseFloat(searchParams.get('maxPrice')!) : undefined;
+    const search = searchParams.get('search') || undefined;
+    const sortBy = searchParams.get('sortBy') || 'title';
+    const sortOrder = (searchParams.get('sortOrder') || 'asc') as 'asc' | 'desc';
 
-    const db = new Database(DB_PATH, { readonly: true });
+    const result = await getProducts({
+      page,
+      limit,
+      category,
+      seller,
+      minPrice,
+      maxPrice,
+      search,
+      sortBy,
+      sortOrder,
+    });
 
-    // Build WHERE clause dynamically
-    const whereClauses: string[] = [];
-    const params: (string | number)[] = [];
-
-    if (category) {
-      whereClauses.push('category = ?');
-      params.push(category);
-    }
-
-    if (minPrice) {
-      whereClauses.push('price >= ?');
-      params.push(parseFloat(minPrice));
-    }
-
-    if (maxPrice) {
-      whereClauses.push('price <= ?');
-      params.push(parseFloat(maxPrice));
-    }
-
-    if (search) {
-      whereClauses.push('(title LIKE ? OR seller LIKE ?)');
-      params.push(`%${search}%`, `%${search}%`);
-    }
-
-    const whereClause = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
-
-    // Get total count
-    const countQuery = `SELECT COUNT(*) as total FROM takealot_products ${whereClause}`;
-    const countResult: { total: number } = db.prepare(countQuery).get(...params) as { total: number };
-    const total = countResult.total;
-
-    // Get paginated results
-    const query = `
-      SELECT plid, title, price, category, subcategory, seller, images, reviews_count, rating, buybox_price, url
-      FROM takealot_products
-      ${whereClause}
-      ORDER BY plid
-      LIMIT ? OFFSET ?
-    `;
-    const products = db.prepare(query).all(...params, limit, offset) as TakealotProduct[];
-
-    db.close();
-
-    const response: ProductsResponse = {
-      products,
-      pagination: {
-        limit,
-        offset,
-        total,
-        hasMore: offset + products.length < total,
-      },
-    };
-
-    return NextResponse.json(response);
+    return NextResponse.json(result);
   } catch (error) {
     console.error('Error fetching products:', error);
     return NextResponse.json(
-      { error: 'Failed to fetch products', details: error instanceof Error ? error.message : 'Unknown error' },
+      { error: 'Failed to fetch products' },
       { status: 500 }
     );
   }
