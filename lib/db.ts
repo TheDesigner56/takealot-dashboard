@@ -1,16 +1,6 @@
-// Database abstraction: SQLite for local, Vercel Postgres for production
-import Database from 'better-sqlite3';
+// Database: JSON files for Vercel compatibility
 import path from 'path';
-
-const isDev = process.env.NODE_ENV !== 'production' || !process.env.POSTGRES_URL;
-
-// ── SQLite (local dev) ──────────────────────────────────────────
-function getSqliteDb() {
-  const dbPath = path.join(process.cwd(), 'shadow_catalog.db');
-  const db = new Database(dbPath);
-  db.pragma('journal_mode = WAL');
-  return db;
-}
+import { promises as fs } from 'fs';
 
 // ── Shared Types ────────────────────────────────────────────────
 export interface Product {
@@ -44,6 +34,19 @@ export interface RelistOpportunity {
   confidence: number;
 }
 
+// ── Data Loading ────────────────────────────────────────────────
+async function loadData() {
+  const dataDir = path.join(process.cwd(), 'public', 'data');
+  
+  const [products, gaps, opportunities] = await Promise.all([
+    fs.readFile(path.join(dataDir, 'products.json'), 'utf-8').then(JSON.parse),
+    fs.readFile(path.join(dataDir, 'gaps.json'), 'utf-8').then(JSON.parse),
+    fs.readFile(path.join(dataDir, 'opportunities.json'), 'utf-8').then(JSON.parse),
+  ]);
+  
+  return { products, gaps, opportunities };
+}
+
 // ── Stats ─────────────────────────────────────────────────────
 export async function getStats(): Promise<{
   products: number;
@@ -51,25 +54,15 @@ export async function getStats(): Promise<{
   opportunities: number;
   categories: number;
 }> {
-  if (isDev) {
-    const db = getSqliteDb();
-    try {
-      const products = db.prepare('SELECT COUNT(*) as count FROM takealot_products').get() as { count: number };
-      const gaps = db.prepare('SELECT COUNT(*) as count FROM gap_matches').get() as { count: number };
-      const opportunities = db.prepare('SELECT COUNT(*) as count FROM relist_opportunities').get() as { count: number };
-      const categories = db.prepare('SELECT COUNT(DISTINCT category) as count FROM takealot_products').get() as { count: number };
-      return {
-        products: products.count,
-        gaps: gaps.count,
-        opportunities: opportunities.count,
-        categories: categories.count,
-      };
-    } finally {
-      db.close();
-    }
-  }
-  // Production: return mock stats since we're using SQLite
-  return { products: 0, gaps: 0, opportunities: 0, categories: 0 };
+  const { products, gaps, opportunities } = await loadData();
+  const categories = new Set(products.map((p: Product) => p.category)).size;
+  
+  return {
+    products: products.length,
+    gaps: gaps.length,
+    opportunities: opportunities.length,
+    categories,
+  };
 }
 
 // ── Products ───────────────────────────────────────────────────
@@ -95,60 +88,38 @@ export async function getProducts(opts: {
     sortBy = 'title',
     sortOrder = 'asc'
   } = opts;
+  
+  const { products: allProducts } = await loadData();
+  
+  let filtered = allProducts.filter((p: Product) => {
+    if (search && !p.title?.toLowerCase().includes(search.toLowerCase())) return false;
+    if (category && p.category !== category) return false;
+    if (seller && p.seller !== seller) return false;
+    if (minPrice !== undefined && p.current_price < minPrice) return false;
+    if (maxPrice !== undefined && p.current_price > maxPrice) return false;
+    return true;
+  });
+  
+  const total = filtered.length;
+  
+  // Sort
+  filtered.sort((a: Product, b: Product) => {
+    const aVal = a[sortBy as keyof Product];
+    const bVal = b[sortBy as keyof Product];
+    const cmp = String(aVal).localeCompare(String(bVal));
+    return sortOrder === 'desc' ? -cmp : cmp;
+  });
+  
+  // Paginate
   const offset = (page - 1) * limit;
-
-  const db = getSqliteDb();
-  try {
-    let query = 'SELECT * FROM takealot_products WHERE 1=1';
-    const params: any[] = [];
-    
-    if (search) {
-      query += ' AND (title LIKE ? OR search_keywords LIKE ?)';
-      params.push(`%${search}%`, `%${search}%`);
-    }
-    if (category) {
-      query += ' AND category = ?';
-      params.push(category);
-    }
-    if (seller) {
-      query += ' AND seller = ?';
-      params.push(seller);
-    }
-    if (minPrice !== undefined) {
-      query += ' AND current_price >= ?';
-      params.push(minPrice);
-    }
-    if (maxPrice !== undefined) {
-      query += ' AND current_price <= ?';
-      params.push(maxPrice);
-    }
-
-    const countQuery = query.replace('SELECT *', 'SELECT COUNT(*) as count');
-    const countResult = db.prepare(countQuery).get(...params) as { count: number };
-
-    const validSorts = ['title', 'current_price', 'seller', 'category', 'date_discovered'];
-    const sort = validSorts.includes(sortBy) ? sortBy : 'title';
-    const order = sortOrder === 'desc' ? 'DESC' : 'ASC';
-    
-    query += ` ORDER BY ${sort} ${order}`;
-    query += ' LIMIT ? OFFSET ?';
-    params.push(limit, offset);
-
-    const products = db.prepare(query).all(...params) as Product[];
-    
-    return { products, total: countResult.count };
-  } finally {
-    db.close();
-  }
+  const products = filtered.slice(offset, offset + limit);
+  
+  return { products, total };
 }
 
 export async function getProductById(plid: string): Promise<Product | null> {
-  const db = getSqliteDb();
-  try {
-    return db.prepare('SELECT * FROM takealot_products WHERE plid = ?').get(plid) as Product | null;
-  } finally { 
-    db.close(); 
-  }
+  const { products } = await loadData();
+  return products.find((p: Product) => p.plid === plid) || null;
 }
 
 // ── Gaps ───────────────────────────────────────────────────────
@@ -159,34 +130,24 @@ export async function getGaps(opts: {
   minScore?: number;
 }): Promise<{ gaps: GapMatch[]; total: number }> {
   const { page = 1, limit = 50, status, minScore } = opts;
+  
+  const { gaps: allGaps } = await loadData();
+  
+  let filtered = allGaps.filter((g: GapMatch) => {
+    if (status && g.status !== status) return false;
+    if (minScore !== undefined && g.relevance_score < minScore) return false;
+    return true;
+  });
+  
+  const total = filtered.length;
+  
+  // Sort by relevance
+  filtered.sort((a: GapMatch, b: GapMatch) => b.relevance_score - a.relevance_score);
+  
   const offset = (page - 1) * limit;
-
-  const db = getSqliteDb();
-  try {
-    let query = 'SELECT * FROM gap_matches WHERE 1=1';
-    const params: any[] = [];
-    
-    if (status) {
-      query += ' AND status = ?';
-      params.push(status);
-    }
-    if (minScore !== undefined) {
-      query += ' AND relevance_score >= ?';
-      params.push(minScore);
-    }
-
-    const countQuery = query.replace('SELECT *', 'SELECT COUNT(*) as count');
-    const countResult = db.prepare(countQuery).get(...params) as { count: number };
-
-    query += ' ORDER BY relevance_score DESC LIMIT ? OFFSET ?';
-    params.push(limit, offset);
-
-    const gaps = db.prepare(query).all(...params) as GapMatch[];
-    
-    return { gaps, total: countResult.count };
-  } finally {
-    db.close();
-  }
+  const gaps = filtered.slice(offset, offset + limit);
+  
+  return { gaps, total };
 }
 
 // ── Opportunities ──────────────────────────────────────────────
@@ -197,32 +158,25 @@ export async function getOpportunities(opts: {
   minConfidence?: number;
 }): Promise<{ opportunities: RelistOpportunity[]; total: number }> {
   const { page = 1, limit = 50, minMargin, minConfidence } = opts;
+  
+  const { opportunities: allOps } = await loadData();
+  
+  let filtered = allOps.filter((o: RelistOpportunity) => {
+    if (minMargin !== undefined && o.margin_percent < minMargin) return false;
+    if (minConfidence !== undefined && o.confidence < minConfidence) return false;
+    return true;
+  });
+  
+  const total = filtered.length;
+  
+  // Sort by confidence then margin
+  filtered.sort((a: RelistOpportunity, b: RelistOpportunity) => {
+    if (b.confidence !== a.confidence) return b.confidence - a.confidence;
+    return b.margin_percent - a.margin_percent;
+  });
+  
   const offset = (page - 1) * limit;
-
-  const db = getSqliteDb();
-  try {
-    let query = 'SELECT * FROM relist_opportunities WHERE 1=1';
-    const params: any[] = [];
-    
-    if (minMargin !== undefined) {
-      query += ' AND margin_percent >= ?';
-      params.push(minMargin);
-    }
-    if (minConfidence !== undefined) {
-      query += ' AND confidence >= ?';
-      params.push(minConfidence);
-    }
-
-    const countQuery = query.replace('SELECT *', 'SELECT COUNT(*) as count');
-    const countResult = db.prepare(countQuery).get(...params) as { count: number };
-
-    query += ' ORDER BY confidence DESC, margin_percent DESC LIMIT ? OFFSET ?';
-    params.push(limit, offset);
-
-    const opportunities = db.prepare(query).all(...params) as RelistOpportunity[];
-    
-    return { opportunities, total: countResult.count };
-  } finally {
-    db.close();
-  }
+  const opportunities = filtered.slice(offset, offset + limit);
+  
+  return { opportunities, total };
 }
